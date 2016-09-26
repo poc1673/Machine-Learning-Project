@@ -1,0 +1,163 @@
+---
+title: "Practical Machine Learning Class Project"
+author: "Peter Caya"
+date: "September 21, 2016"
+output: 
+  html_document:
+    keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggplot2)
+
+library(caret)
+library(rpart)
+library(RColorBrewer)
+# library(rattle)
+library(randomForest)
+library(knitr)
+library(dplyr)
+
+```
+
+# Preamble
+
+The goal of this project is to take the exercise data from groupware and use that to predict the manner in which the respondents in the test dataset exercised.  To do this I will train and compare three models:
+
+1. Random forest.
+2. LDA
+3. Naive Bayes Classification
+
+These methods were solely implemented using the caret package.  trainControl was used to specify 5-fold cross-validation with five repititions times.  The train function was then used to implement the four methods discussed above.  
+
+The training dataset was partitioned into two pieces in order to compare the efficacy of the models.  The set which the models were trained on was 80% of the original training data.  This training data was then used on the much smaller testing dataset.
+
+
+# Data Loading and Cleaning
+
+The training data and testing data are loaded.  Cleaning the data consists of several steps:
+
+  1.  Some columns are largely empty.  Columns which consist of more than 50% N/A values are removed from the training data set.
+  2.  Several variables seem to exist as indexes or ID values.  Since these aren't relevant to the classe variable, they are removed.  These variables are X,user_name,raw_timestamp_part_1,raw_timestamp_part_2,cvtd_timestamp,new_window and num_window.      
+3.  The two operations mentioned above are then used to clean the testing data as well so that the columns in the testing data are consistent with those in the training data.
+
+
+```{r}
+set.seed(13)
+
+# A function which returns TRUE if the number of NA values is less than portion and false if it is greater.
+portion.na <- function(X, portion = .5)
+{
+  if( sum(is.na(X))/length(X) > portion){return(FALSE)}
+  else{return(TRUE)}
+}
+
+testingData <-read.table(file = "F:/Machine Learning/Project/pml-testing.csv",header = TRUE, sep = ",",na.strings=c("NA","#DIV/0!",""))
+trainingData <-read.table(file = "F:/Machine Learning/Project/pml-training.csv",header = TRUE, sep = ",",na.strings=c("NA","#DIV/0!",""))
+
+na_acceptable <- apply(X = trainingData,MARGIN = 2 , FUN = portion.na, portion = .5)
+trainingData<-trainingData[,na_acceptable]
+
+classe_training <- trainingData%>% select_("classe")
+
+training_indices <- createDataPartition(trainingData$classe,p = .01,list = FALSE)
+trainingData <- trainingData[-60]
+training_data1<- trainingData[training_indices,]
+training_data2 <- trainingData[-training_indices,]
+classe1 <- as.factor(classe_training[training_indices])
+classe2 <-as.factor( classe_training[-training_indices])
+training_data1<- cbind(training_data1,classe1)
+training_data2<- cbind(training_data2,classe2)
+training_data1<- training_data1 %>% rename_(classe = "classe1"  ) %>% 
+                                    dplyr::select(-c(X:num_window))
+training_data2<- training_data2 %>% rename_(classe = "classe2"  ) %>%
+                                    dplyr::select(-c(X:num_window))
+
+names_used <- na.omit(match(names(training_data1),names(testingData)))
+data_to_test <- testingData[names_used]
+
+
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 5,
+                           repeats = 5)
+```
+
+## Random Forest
+```{r,cache =TRUE, message = FALSE, error = FALSE, warning = FALSE}
+RF_model <- train(data = training_data1, 
+                  classe~.,
+                  method  = "rf" , trControl = fitControl)
+RF_training2 <-predict(RF_model, training_data2,type="raw")
+plot(RF_training2)
+RF_confusion <- confusionMatrix(RF_training2, training_data2$classe)
+print(RF_confusion)
+```
+
+Based on the results above I expect my implementation of random forest to have accuracy of `r RF_confusion$overall[1]` when applied to an out of sample group.  We see from the sensitivity and specificy statistics that this managed to keep misclassifications uncommon.
+
+
+## LDA
+```{r,cache =TRUE, error =FALSE, warning = FALSE,message = FALSE}
+LDA_model <- train(data = training_data1, 
+                   classe~.,
+                   method  = "lda", trControl = fitControl)
+LDA_training <-predict(LDA_model, training_data2,type="raw")
+#plot(NB_model)
+LDA_confusion <- confusionMatrix(LDA_training, training_data2$classe)
+print(LDA_confusion)
+```
+
+LDA performed much more poorly than the random forest algorithm with an accuracy of `r LDA_confusion$overall[1]` with similar losses in sensitivity and specificity.
+
+
+## Naive-Bayes
+```{r,cache =TRUE, error =FALSE, warning = FALSE,message = FALSE}
+NB_model <- train(data = training_data1, 
+                  classe~.,
+                  method  = "nb"  )
+NB_training <-predict(NB_model, training_data2,type="raw", trControl = fitControl)
+plot(NB_model)
+NB_confusion <- confusionMatrix(NB_training, training_data2$classe)
+print(NB_confusion)
+```
+
+Naive Bayes performed slightly better than LDA but still more poorly than random forest.  It had an accuracy of `r NB_confusion$overall[1]` with fairly unever presentations for sensitivity and specificity.
+
+## Combining the Three Methods:
+
+Displayed below is the end product of this project.  I have taken the three algorithms I trained for this and used them on the testing data set.  To further improve accuracy I then used a simple vote to determine the final answer which was then output to a csv file.
+
+```{r,cache =TRUE, error =FALSE, warning = FALSE,message = FALSE}
+
+vote <- function(X)
+{
+  names(sort(X,decreasing = TRUE))[1]
+}
+
+predictions_RF<- predict(RF_model, data_to_test, type = "raw")
+predictions_LDA<- predict(LDA_model, data_to_test, type = "raw")
+predictions_NB<- predict(NB_model, data_to_test, type = "raw")
+# predictions_GBM <-predict(GBM_model, data_to_test, type = "raw")
+
+Predict_Table <-data.frame(predictions_RF,predictions_LDA,predictions_NB)
+Predict_Table <-as.matrix(Predict_Table)
+
+voted <- as.character()
+
+
+for(i in 1:dim(Predict_Table)[1])
+  voted[i] <- names(sort(table(Predict_Table[i,]),decreasing = TRUE))[1]
+
+write.csv(voted,"quiz_answers.csv",row.names = FALSE)
+
+
+```
+
+
+
+
+
+
+
